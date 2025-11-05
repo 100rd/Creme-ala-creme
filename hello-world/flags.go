@@ -100,6 +100,45 @@ func isMetricsEnabled(ctx context.Context) bool {
 // POST /admin/flags body: {"tracing": true/false, "metrics": true/false}
 // POST /admin/flags?tracing=true&metrics=false also supported
 // POST /admin/flags/reset -> clears overrides
+//
+// Authentication: Requires X-Admin-API-Key header matching ADMIN_API_KEY env var
+// If ADMIN_API_KEY is not set, endpoints are INSECURE (dev/local only)
+
+func adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := os.Getenv("ADMIN_API_KEY")
+
+		// If no API key configured, warn and allow (dev mode)
+		if apiKey == "" {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str("path", r.URL.Path).
+				Msg("admin endpoint accessed without authentication (ADMIN_API_KEY not set)")
+			next(w, r)
+			return
+		}
+
+		// Check Authorization header (Bearer token)
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "" && authHeader == "Bearer "+apiKey {
+			next(w, r)
+			return
+		}
+
+		// Check X-Admin-API-Key header
+		providedKey := r.Header.Get("X-Admin-API-Key")
+		if providedKey == "" || providedKey != apiKey {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str("path", r.URL.Path).
+				Msg("unauthorized admin endpoint access attempt")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
 
 func adminFlagsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -173,11 +212,12 @@ func ensureTracerProvider(ctx context.Context) {
 
 	shutdown, err := tracerProviderFactory(ctx)
 	if err != nil {
-		log.Printf("tracing init failed, continuing without tracing: %v", err)
+		logger.Warn().Err(err).Msg("tracing init failed, continuing without tracing")
 		return
 	}
 	tracerShutdownFn = shutdown
 	tracerInitialized.Store(true)
+	logger.Info().Msg("tracing provider initialized")
 }
 
 func shutdownTracerProvider(ctx context.Context) {
@@ -189,7 +229,7 @@ func shutdownTracerProvider(ctx context.Context) {
 
 	if shutdown != nil {
 		if err := shutdown(ctx); err != nil {
-			log.Printf("tracer shutdown error: %v", err)
+			logger.Error().Err(err).Msg("tracer shutdown error")
 		}
 	}
 }

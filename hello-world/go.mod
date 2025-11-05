@@ -8,6 +8,7 @@ require (
     github.com/prometheus/client_golang v1.17.0
     github.com/open-feature/flagd-go-sdk v0.12.0
     github.com/open-feature/go-sdk/openfeature v1.14.0
+    github.com/rs/zerolog v1.33.0
     go.opentelemetry.io/otel v1.38.0
     go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.38.0
     go.opentelemetry.io/otel/sdk v1.38.0

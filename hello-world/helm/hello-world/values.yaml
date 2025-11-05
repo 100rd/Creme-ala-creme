@@ -84,9 +84,57 @@ networkPolicy:
 env:
   - name: PORT
     value: "8080"
-  # Example: ensure DATABASE_URL is supplied via Secret in real envs
-  # - name: DATABASE_URL
-  #   valueFrom:
-  #     secretKeyRef:
-  #       name: hello-world-db
-  #       key: url
+  - name: LOG_LEVEL
+    value: "info"
+  - name: LOG_FORMAT
+    value: "json"
+  - name: ENVIRONMENT
+    value: "production"
+  # SKIP_MIGRATIONS should be true in production (migrations run via Job)
+  - name: SKIP_MIGRATIONS
+    value: "true"
+  # DATABASE_URL is supplied via Secret (created by ExternalSecret or manually)
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: hello-world-db
+        key: url
+  # Feature flags - controlled via OpenFeature/flagd in production
+  - name: ENABLE_METRICS
+    value: "true"
+  - name: ENABLE_TRACING
+    value: "true"
+  # Admin endpoints should be disabled in production
+  - name: ADMIN_FLAGS_ENABLED
+    value: "false"
+  # OpenFeature / flagd
+  - name: FLAGD_HOST
+    value: "flagd"
+  - name: FLAGD_PORT
+    value: "8013"
+  # OpenTelemetry
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4318"
+  - name: OTEL_TRACES_EXPORTER
+    value: "otlp"
+  - name: OTEL_SERVICE_NAME
+    value: "hello-world"
+
+# Database migrations configuration
+migrations:
+  enabled: true
+  # Secret containing DATABASE_URL for migrations
+  # This secret is created by externalSecret or manually
+  secretName: "hello-world-db"
+  secretKey: "url"
+
+# External Secrets Operator integration
+# Enables automatic secret synchronization from AWS Secrets Manager, Vault, etc.
+externalSecret:
+  enabled: false
+  secretStoreRef:
+    name: "aws-secretsmanager"
+    kind: "SecretStore"
+  # Path in secret store (e.g., AWS Secrets Manager ARN or path)
+  secretPath: "hello-world/database"
+  refreshInterval: "1h"

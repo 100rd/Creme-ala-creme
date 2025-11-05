@@ -28,17 +28,49 @@ ALERT_IMAGE := prom/alertmanager:v0.26.0
 .PHONY: help
 help:
 	@echo "Available targets:"
+	@echo ""
+	@echo "Development:"
+	@echo "  install-hooks         - Install pre-commit hooks"
+	@echo "  fmt                   - Format Go code"
+	@echo "  lint                  - Run golangci-lint"
+	@echo "  security-scan         - Run security scanners (gosec, govulncheck)"
+	@echo "  test                  - Run Go tests (auto-detected app dir)"
+	@echo ""
+	@echo "Docker:"
 	@echo "  compose-up            - Build and start all services via docker-compose"
 	@echo "  compose-down          - Stop and remove docker-compose stack"
 	@echo "  compose-logs          - Tail logs from docker-compose services"
-	@echo "  test                  - Run Go tests (auto-detected app dir)"
 	@echo "  build-local           - Build $(APP_DIR):local Docker image"
+	@echo ""
+	@echo "Kubernetes:"
 	@echo "  deploy-local          - Build image and kubectl apply local manifests"
 	@echo "  delete-local          - kubectl delete local manifests"
+	@echo ""
+	@echo "Monitoring:"
 	@echo "  monitor-up            - Start Alertmanager and Prometheus via docker-compose"
 	@echo "  monitor-down          - Stop Alertmanager and Prometheus"
 	@echo "  monitor-logs          - Tail monitoring service logs"
 	@echo "  monitor-check         - Validate Prometheus and Alertmanager configs"
+
+.PHONY: install-hooks
+install-hooks:
+	@command -v pre-commit >/dev/null 2>&1 || { echo "Installing pre-commit..."; pip install pre-commit; }
+	pre-commit install
+	@echo "Pre-commit hooks installed successfully"
+
+.PHONY: fmt
+fmt:
+	cd $(APP_DIR) && gofmt -s -w .
+	cd $(APP_DIR) && go mod tidy
+
+.PHONY: lint
+lint:
+	cd $(APP_DIR) && golangci-lint run ./...
+
+.PHONY: security-scan
+security-scan:
+	cd $(APP_DIR) && gosec ./...
+	cd $(APP_DIR) && govulncheck ./...
 
 .PHONY: compose-up
 compose-up:
