@@ -7,7 +7,6 @@
 
 # Compiled binaries
 hello-world/hello-world
-**/hello-world
 
 # Test binary, built with `go test -c`
 *.test
