@@ -1,0 +1,13 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hello-world.fullname" . }}-migrations
+  labels:
+    {{- include "hello-world.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "migrations/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

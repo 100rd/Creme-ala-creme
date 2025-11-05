@@ -5,17 +5,24 @@ services:
     build:
       context: ./hello-world
       dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-local}
     image: hello-world:local
     environment:
-      - PORT=8080
-      - DATABASE_URL=postgres://hello:hello@db:5432/hellodb?sslmode=disable
+      - PORT=${PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-pretty}
+      - DATABASE_URL=${DATABASE_URL:-postgres://hello:hello@db:5432/hellodb?sslmode=disable}
+      - SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
       # Feature flags (optional): set to "true" to enable
-      - ENABLE_TRACING=true
-      - ENABLE_METRICS=true
+      - ENABLE_TRACING=${ENABLE_TRACING:-true}
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - ADMIN_FLAGS_ENABLED=${ADMIN_FLAGS_ENABLED:-true}
       # OTLP HTTP endpoint for OpenTelemetry exporter
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_TRACES_EXPORTER=otlp
-      - OTEL_SERVICE_NAME=hello-world
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - OTEL_TRACES_EXPORTER=${OTEL_TRACES_EXPORTER:-otlp}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-hello-world}
+      - ENVIRONMENT=${ENVIRONMENT:-local}
     ports:
       - "8080:8080"
     depends_on:
@@ -63,15 +70,20 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: hellodb
-      POSTGRES_USER: hello
-      POSTGRES_PASSWORD: hello
+      POSTGRES_DB: ${POSTGRES_DB:-hellodb}
+      POSTGRES_USER: ${POSTGRES_USER:-hello}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hello}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "hello"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-hello}"]
       interval: 5s
       timeout: 3s
       retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
 
 

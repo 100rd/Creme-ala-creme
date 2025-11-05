@@ -1,11 +1,14 @@
 # Build stage
 FROM golang:1.22 AS build
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# Produce a static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/app ./main.go
+# Produce a static binary with version injected at build time
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/app .
 
 # Runtime stage
 FROM gcr.io/distroless/static

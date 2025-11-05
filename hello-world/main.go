@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +25,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// version is injected at build time via -ldflags "-X main.version=<version>"
+var version = "dev"
 
 type appMetrics struct {
 	reqCount    *prometheus.CounterVec
@@ -62,10 +64,9 @@ func (c dependencyChecker) readinessHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (c dependencyChecker) livenessHandler(w http.ResponseWriter, r *http.Request) {
-	if err := c.pingDatabase(r.Context()); err != nil {
-		http.Error(w, fmt.Sprintf("not live: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// Liveness probe should only check if the app process is responsive
+	// NOT external dependencies. Database issues should affect readiness, not liveness.
+	// If we check DB here, database outages will cause Kubernetes to restart healthy pods.
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("alive"))
 }
@@ -104,15 +105,6 @@ func getBoolEnv(name string, def bool) bool {
 	}
 }
 
-func logWithTraceID(ctx context.Context, msg string) {
-	sc := trace.SpanContextFromContext(ctx)
-	if sc.IsValid() {
-		log.Printf("trace_id=%s %s", sc.TraceID().String(), msg)
-		return
-	}
-	log.Printf(msg)
-}
-
 func helloHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// Dynamic tracing flag (OpenFeature override-able)
@@ -130,7 +122,15 @@ func helloHandler(w http.ResponseWriter, r *http.Request) {
 		mtr.reqCount.WithLabelValues("/", r.Method, "200").Inc()
 		mtr.reqDuration.WithLabelValues("/", r.Method).Observe(dur)
 	}
-	logWithTraceID(ctx, fmt.Sprintf("Handled / request from %s in %.4fs", r.RemoteAddr, dur))
+
+	loggerFromContext(ctx).Info().
+		Str("method", r.Method).
+		Str("path", r.URL.Path).
+		Str("remote_addr", r.RemoteAddr).
+		Str("user_agent", r.UserAgent()).
+		Int("status", http.StatusOK).
+		Float64("duration_seconds", dur).
+		Msg("handled request")
 }
 
 func initTracer(ctx context.Context) (func(context.Context) error, error) {
@@ -148,7 +148,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			attribute.String("service.name", svcName),
-			attribute.String("service.version", "1.0.0"),
+			attribute.String("service.version", version),
 			attribute.String("env", os.Getenv("ENVIRONMENT")),
 		),
 	)
@@ -165,6 +165,13 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 }
 
 func main() {
+	// Initialize structured JSON logger
+	initLogger()
+
+	logger.Info().
+		Str("version", version).
+		Msg("starting hello-world application")
+
 	// Feature flags defaults via env vars
 	metricsDefault := getBoolEnv("ENABLE_METRICS", false)
 	tracingDefault := getBoolEnv("ENABLE_TRACING", false)
@@ -181,15 +188,15 @@ func main() {
 	if dbURL != "" {
 		db, err = setupDatabase(dbURL)
 		if err != nil {
-			log.Fatalf("database initialization failed: %v", err)
+			logger.Fatal().Err(err).Msg("database initialization failed")
 		}
 		defer func() {
 			if cerr := db.Close(); cerr != nil {
-				log.Printf("database close error: %v", cerr)
+				logger.Error().Err(cerr).Msg("database close error")
 			}
 		}()
 	} else {
-		log.Printf("DATABASE_URL not set, skipping migrations")
+		logger.Info().Msg("DATABASE_URL not set, skipping database setup")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -222,9 +229,14 @@ func main() {
 
 	// Admin flags (local/dev): GET returns current; POST sets; POST /reset clears overrides
 	if adminFlagsEnabled {
-		mux.HandleFunc("/admin/flags", adminFlagsHandler)
-		mux.HandleFunc("/admin/flags/reset", adminFlagsResetHandler)
-		log.Printf("Admin flags endpoint enabled (no auth): /admin/flags")
+		mux.HandleFunc("/admin/flags", adminAuthMiddleware(adminFlagsHandler))
+		mux.HandleFunc("/admin/flags/reset", adminAuthMiddleware(adminFlagsResetHandler))
+		hasAuth := os.Getenv("ADMIN_API_KEY") != ""
+		if hasAuth {
+			logger.Info().Msg("Admin flags endpoint enabled with API key authentication: /admin/flags")
+		} else {
+			logger.Warn().Msg("Admin flags endpoint enabled WITHOUT authentication (dev mode only): /admin/flags")
+		}
 	}
 
 	addr := ":8080"
@@ -248,18 +260,21 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
-	log.Printf("Starting hello-world on %s (feature flags via OpenFeature/flagd; admin=%v)", addr, adminFlagsEnabled)
+	logger.Info().
+		Str("addr", addr).
+		Bool("admin_flags_enabled", adminFlagsEnabled).
+		Msg("server started")
 
 	select {
 	case err := <-serverErr:
 		if err != nil {
-			log.Fatalf("server failed: %v", err)
+			logger.Fatal().Err(err).Msg("server failed")
 		}
 	case sig := <-sigCh:
-		log.Printf("Received signal %s, initiating graceful shutdown", sig)
+		logger.Info().Str("signal", sig.String()).Msg("received shutdown signal")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("server shutdown error: %v", err)
+			logger.Error().Err(err).Msg("server shutdown error")
 		}
 		cancel()
 		<-serverErr
@@ -271,26 +286,17 @@ func setupDatabase(databaseURL string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Skip migrations if SKIP_MIGRATIONS=true (they should be run via Kubernetes Job)
+	skipMigrations := getBoolEnv("SKIP_MIGRATIONS", false)
+	if skipMigrations {
+		logger.Info().Msg("SKIP_MIGRATIONS=true, migrations will not run in application")
+		return db, nil
+	}
+
 	if err := runMigrations(db); err != nil {
 		db.Close()
 		return nil, err
-=======
-
-	srv := &http.Server{Addr: addr, Handler: mux}
-
-	go func() {
-		<-ctx.Done()
-		shutdownTracerProvider(context.Background())
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("server shutdown error: %v", err)
-		}
-	}()
-
-	log.Printf("Starting hello-world on %s (feature flags via OpenFeature/flagd; admin=%v)", addr, adminFlagsEnabled)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("server failed: %v", err)
 	}
 	return db, nil
 }
@@ -335,9 +341,9 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 	if err == migrate.ErrNoChange {
-		log.Printf("migrations: no change")
+		logger.Info().Msg("migrations: no change")
 	} else {
-		log.Printf("migrations: applied successfully")
+		logger.Info().Msg("migrations: applied successfully")
 	}
 	return nil
 }

@@ -1,0 +1,66 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hello-world.fullname" . }}-migration-{{ .Values.image.tag | replace "." "-" | replace ":" "-" }}
+  labels:
+    {{- include "hello-world.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    # Helm hook ensures this runs before deployment
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "hello-world.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "hello-world.serviceAccountName" . }}
+      containers:
+        - name: migration
+          image: "migrate/migrate:v4.17.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting database migration..."
+              migrate -path=/migrations -database "${DATABASE_URL}" up
+              echo "Migration completed successfully"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migrations.secretName | default (printf "%s-db" (include "hello-world.fullname" .)) }}
+                  key: {{ .Values.migrations.secretKey | default "url" }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "hello-world.fullname" . }}-migrations
+{{- end }}
