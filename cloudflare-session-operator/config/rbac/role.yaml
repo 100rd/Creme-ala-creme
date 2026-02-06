@@ -1,0 +1,63 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudflare-session-operator-manager-role
+rules:
+  # SessionBinding resources
+  - apiGroups:
+      - cloudflare.example.com
+    resources:
+      - sessionbindings
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - cloudflare.example.com
+    resources:
+      - sessionbindings/status
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - cloudflare.example.com
+    resources:
+      - sessionbindings/finalizers
+    verbs:
+      - update
+  # Pod management
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # Deployment lookups (read-only)
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+  # Events
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch

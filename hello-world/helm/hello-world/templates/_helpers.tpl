@@ -35,3 +35,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+SecretStore name — used by both secretstore.yaml and externalsecret.yaml
+*/}}
+{{- define "hello-world.secretStoreName" -}}
+{{- printf "%s-aws-sm" (include "hello-world.fullname" .) -}}
+{{- end -}}

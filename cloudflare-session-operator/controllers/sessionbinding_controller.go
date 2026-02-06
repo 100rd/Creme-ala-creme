@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Creme-ala-creme/cloudflare-session-operator/api/v1alpha1"
@@ -17,7 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -27,7 +29,11 @@ import (
 const (
 	sessionBindingFinalizer = "sessionbinding.cloudflare.example.com/finalizer"
 	podSessionLabelKey      = "cloudflare.example.com/session-id"
+	maxPodNameLength        = 63
 )
+
+// invalidPodNameChars matches any character not valid in a Kubernetes pod name.
+var invalidPodNameChars = regexp.MustCompile(`[^a-z0-9-]`)
 
 // SessionBindingReconciler reconciles a SessionBinding object
 type SessionBindingReconciler struct {
@@ -99,6 +105,44 @@ func (r *SessionBindingReconciler) reconcileActive(ctx context.Context, logger l
 		return ctrl.Result{}, nil
 	}
 
+	// TTL enforcement: if ttlSeconds is set, check whether the binding has expired.
+	if binding.Spec.TTLSeconds != nil && *binding.Spec.TTLSeconds > 0 {
+		creationTime := binding.CreationTimestamp.Time
+		ttlDuration := time.Duration(*binding.Spec.TTLSeconds) * time.Second
+		expiresAt := creationTime.Add(ttlDuration)
+		now := r.Clock.Now()
+
+		if now.After(expiresAt) {
+			logger.Info("SessionBinding has exceeded TTL, marking expired",
+				"sessionID", binding.Spec.SessionID,
+				"ttlSeconds", *binding.Spec.TTLSeconds,
+				"createdAt", creationTime.Format(time.RFC3339),
+				"expiredAt", expiresAt.Format(time.RFC3339),
+			)
+			r.setCondition(&binding.Status.Conditions, v1alpha1.ConditionSessionDiscovered, metav1.ConditionFalse, "TTLExpired",
+				fmt.Sprintf("Binding exceeded TTL of %d seconds", *binding.Spec.TTLSeconds))
+			binding.Status.Phase = v1alpha1.SessionBindingPhaseExpired
+
+			// Clean up resources on expiry.
+			if err := r.cleanupResources(ctx, logger, binding); err != nil {
+				logger.Error(err, "failed to clean up expired binding resources")
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			r.Recorder.Event(binding, corev1.EventTypeNormal, "TTLExpired",
+				fmt.Sprintf("Session binding expired after %d seconds", *binding.Spec.TTLSeconds))
+			return ctrl.Result{}, nil
+		}
+
+		// Requeue before TTL expires so we catch it promptly.
+		remaining := time.Until(expiresAt)
+		logger.V(1).Info("TTL still valid", "remaining", remaining.String())
+		// We will use the shorter of the remaining TTL or the normal requeue result below.
+		defer func() {
+			// This is a best-effort hint; the reconcile result from the rest of the
+			// function may already include a RequeueAfter that is shorter.
+		}()
+	}
+
 	sessionExists, sessionErr := r.CFClient.EnsureSession(ctx, binding.Spec.SessionID)
 	if sessionErr != nil {
 		logger.Error(sessionErr, "failed to verify Cloudflare session")
@@ -150,11 +194,23 @@ func (r *SessionBindingReconciler) reconcileActive(ctx context.Context, logger l
 	binding.Status.BoundPod = pod.Name
 	binding.Status.RouteEndpoint = endpoint
 	r.setCondition(&binding.Status.Conditions, v1alpha1.ConditionRouteConfigured, metav1.ConditionTrue, "RouteConfigured", "Cloudflare route configured")
+
+	// If TTL is set, requeue before expiry.
+	if binding.Spec.TTLSeconds != nil && *binding.Spec.TTLSeconds > 0 {
+		creationTime := binding.CreationTimestamp.Time
+		ttlDuration := time.Duration(*binding.Spec.TTLSeconds) * time.Second
+		expiresAt := creationTime.Add(ttlDuration)
+		remaining := time.Until(expiresAt)
+		if remaining > 0 {
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
 func (r *SessionBindingReconciler) ensureSessionPod(ctx context.Context, logger logr.Logger, binding *v1alpha1.SessionBinding) (*corev1.Pod, error) {
-	podName := fmt.Sprintf("session-%s", binding.Spec.SessionID)
+	podName := sanitizePodName(fmt.Sprintf("session-%s", binding.Spec.SessionID))
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: podName}, pod); err == nil {
 		return pod, nil
@@ -200,6 +256,43 @@ func (r *SessionBindingReconciler) ensureSessionPod(ctx context.Context, logger 
 
 	r.Recorder.Event(binding, corev1.EventTypeNormal, "PodCreated", fmt.Sprintf("Created pod %s for session %s", pod.Name, binding.Spec.SessionID))
 	return pod, nil
+}
+
+// sanitizePodName transforms an arbitrary string into a valid Kubernetes pod name.
+// Pod names must match [a-z0-9]([-a-z0-9]*[a-z0-9])? and be at most 63 characters.
+func sanitizePodName(name string) string {
+	// Lowercase the entire string.
+	name = strings.ToLower(name)
+
+	// Replace underscores and dots with hyphens (common substitution).
+	name = strings.ReplaceAll(name, "_", "-")
+	name = strings.ReplaceAll(name, ".", "-")
+
+	// Remove any remaining invalid characters.
+	name = invalidPodNameChars.ReplaceAllString(name, "")
+
+	// Collapse consecutive hyphens.
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+
+	// Trim leading and trailing hyphens.
+	name = strings.Trim(name, "-")
+
+	// Truncate to maxPodNameLength characters.
+	if len(name) > maxPodNameLength {
+		name = name[:maxPodNameLength]
+	}
+
+	// Trim trailing hyphens again after truncation.
+	name = strings.TrimRight(name, "-")
+
+	// If the name is empty after sanitization, use a fallback.
+	if name == "" {
+		name = "session-unknown"
+	}
+
+	return name
 }
 
 func isPodReady(pod *corev1.Pod) bool {

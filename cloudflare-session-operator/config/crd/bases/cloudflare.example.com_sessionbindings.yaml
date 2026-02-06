@@ -24,18 +24,30 @@ spec:
               properties:
                 sessionID:
                   type: string
+                  description: "Cloudflare session identifier to bind."
+                  pattern: "^[a-zA-Z0-9_-]{1,128}$"
+                  maxLength: 128
                 userID:
                   type: string
+                  description: "Optional identifier for the user owning the session."
                 targetDeployment:
                   type: string
+                  description: "Deployment to clone for session pods."
                 ttlSeconds:
                   type: integer
                   format: int64
+                  description: "How long the binding remains active after creation (minimum 60 seconds)."
+                  minimum: 60
             status:
               type: object
               properties:
                 phase:
                   type: string
+                  enum:
+                    - Pending
+                    - Bound
+                    - Expired
+                    - Error
                 boundPod:
                   type: string
                 routeEndpoint:
@@ -65,3 +77,16 @@ spec:
                         format: date-time
       subresources:
         status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Session
+          type: string
+          jsonPath: .spec.sessionID
+        - name: Pod
+          type: string
+          jsonPath: .status.boundPod
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

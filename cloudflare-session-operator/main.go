@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"log"
 	"os"
 	"time"
 
@@ -12,10 +13,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 var (
@@ -32,34 +34,53 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var watchNamespace string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.StringVar(&watchNamespace, "namespace", "", "Limit the operator to a single namespace. If empty, all namespaces are watched.")
 	flag.Parse()
 
-	logger := stdr.New(os.Stdout)
-	log.SetLogger(logger)
+	logger := stdr.New(log.New(os.Stderr, "", log.LstdFlags))
+	ctrllog.SetLogger(logger)
+
+	cfClient := cloudflare.NewClientFromEnv()
+	cfClient.SetLogger(ctrl.Log.WithName("cloudflare"))
+
+	if !cfClient.HasCredentials() {
+		setupLog.Error(nil, "missing required Cloudflare credentials: CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set")
+		os.Exit(1)
+	}
+
+	cacheOpts := cache.Options{
+		SyncPeriod: func() *time.Duration {
+			d := 5 * time.Minute
+			return &d
+		}(),
+	}
+
+	if watchNamespace != "" {
+		setupLog.Info("restricting operator to single namespace", "namespace", watchNamespace)
+		cacheOpts.DefaultNamespaces = map[string]cache.Config{
+			watchNamespace: {},
+		}
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "sessionbinding.cloudflare.example",
-		Cache: cache.Options{
-			SyncPeriod: func() *time.Duration {
-				d := 5 * time.Minute
-				return &d
-			}(),
-		},
+		Cache:                  cacheOpts,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
-
-	cfClient := cloudflare.NewClientFromEnv()
 
 	if err = (&controllers.SessionBindingReconciler{
 		Client:   mgr.GetClient(),

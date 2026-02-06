@@ -28,6 +28,10 @@ podAnnotations: {}
 serviceAccount:
   create: true
   name: ""
+  annotations: {}
+  # For IRSA (AWS EKS), set the role ARN:
+  # annotations:
+  #   eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/hello-world-secrets"
 
 securityContext:
   runAsNonRoot: true
@@ -42,9 +46,18 @@ securityContext:
 
 ingress:
   enabled: false
-  className: ""
-  hosts: []
-  tls: []
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: hello-world.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hello-world-tls
+      hosts:
+        - hello-world.example.com
 
 hpa:
   enabled: true
@@ -128,12 +141,21 @@ migrations:
   secretName: "hello-world-db"
   secretKey: "url"
 
+# SecretStore for External Secrets Operator
+# Creates a SecretStore resource pointing to AWS Secrets Manager
+# Requires IRSA: set serviceAccount.annotations with eks.amazonaws.com/role-arn
+secretStore:
+  enabled: false
+  region: eu-central-1
+  provider: aws  # aws-secrets-manager
+
 # External Secrets Operator integration
-# Enables automatic secret synchronization from AWS Secrets Manager, Vault, etc.
+# Enables automatic secret synchronization from AWS Secrets Manager
+# Requires secretStore.enabled=true (or a pre-existing SecretStore)
 externalSecret:
   enabled: false
   secretStoreRef:
-    name: "aws-secretsmanager"
+    name: "hello-world-aws-sm"
     kind: "SecretStore"
   # Path in secret store (e.g., AWS Secrets Manager ARN or path)
   secretPath: "hello-world/database"
