@@ -65,20 +65,47 @@ serviceMonitor:
 networkPolicy:
   enabled: true
   defaultDeny: true
+  allowIngress:
+    # Allow service traffic on container port
+    - ports:
+        - port: 8080
+          protocol: TCP
+    # Allow Prometheus scraping from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+          protocol: TCP
   allowEgress:
-    - toNamespaceSelector: {}
-      toPodSelector:
-        matchLabels:
-          app: postgres
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Database access
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
       ports:
         - port: 5432
           protocol: TCP
-    - toNamespaceSelector: {}
-      toPodSelector:
-        matchLabels:
-          app: otel-collector
+    # OpenTelemetry collector
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
       ports:
         - port: 4317
+          protocol: TCP
+        - port: 4318
           protocol: TCP
 
 env:
@@ -138,3 +165,11 @@ externalSecret:
   # Path in secret store (e.g., AWS Secrets Manager ARN or path)
   secretPath: "hello-world/database"
   refreshInterval: "1h"
+
+resourceQuota:
+  enabled: true
+  requestsCpu: "2"
+  requestsMemory: "2Gi"
+  limitsCpu: "8"
+  limitsMemory: "8Gi"
+  pods: "20"

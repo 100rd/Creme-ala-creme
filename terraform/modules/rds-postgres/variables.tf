@@ -13,6 +13,11 @@ variable "vpc_id" {
   type        = string
 }
 
+variable "vpc_cidr_block" {
+  description = "VPC CIDR block for restricting RDS security group egress"
+  type        = string
+}
+
 variable "subnet_ids" {
   description = "List of subnet IDs for DB subnet group"
   type        = list(string)
@@ -154,6 +159,12 @@ variable "auto_minor_version_upgrade" {
   description = "Enable automatic minor version upgrades"
   type        = bool
   default     = true
+}
+
+variable "iam_authentication_enabled" {
+  description = "Enable IAM database authentication"
+  type        = bool
+  default     = false
 }
 
 variable "db_parameters" {
