@@ -8,33 +8,35 @@ on:
     branches:
       - main
 
-### I added the variables here but this is bad practice - all vars should be on oar level and level of repository
+permissions:
+  contents: read
+  id-token: write  # Required for cosign keyless signing via OIDC
+  packages: write  # Required for pushing SBOM/attestation
+
 env:
-  AWS_REGION: eu-central-1 
-  ECR_REPOSITORY: <your-ecr-repo-name>  # of cource real name
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: <your-ecr-repo-name>
   IMAGE_NAME: hello-world
   PROM_RULES_NAMESPACE: monitoring
   PROM_OPERATOR_RELEASE_LABEL: kube-prometheus-stack
 
 jobs:
   lint-build-test:
-    runs-on: [self-hosted, linux, x64] #self-hosted because of kubernetes and ECR access
+    runs-on: [self-hosted, linux, x64]
     defaults:
       run:
         working-directory: hello-world
-    env:
-      DB_MIGRATION_URL: ${{ secrets.DB_MIGRATION_URL }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
         with:
           go-version: '1.22'
 
       - name: Run Go Linter (golangci-lint)
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@aaa42aa0628b4ae2578232a66b541047968fac86 # v6.1.0
         with:
           version: v1.55
           working-directory: hello-world
@@ -64,10 +66,10 @@ jobs:
         run: $(go env GOPATH)/bin/govulncheck ./...
 
       - name: Trivy filesystem scan (CVE check for app code)
-        uses: aquasecurity/trivy-action@v0.17.0
+        uses: aquasecurity/trivy-action@d9cd5b1c23aaf8cb31bb09141028c8bd06b2fc70 # v0.26.0
         with:
           scan-type: 'fs'
-          path: '.'
+          scan-ref: '.'
           format: 'table'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
@@ -79,12 +81,20 @@ jobs:
         run: docker build -t $IMAGE_NAME:ci .
 
       - name: Run Trivy scan (CVE check for image)
-        uses: aquasecurity/trivy-action@v0.17.0
+        uses: aquasecurity/trivy-action@d9cd5b1c23aaf8cb31bb09141028c8bd06b2fc70 # v0.26.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:ci
           format: 'table'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@ab5d7b5f48981b7c60571f3f25096cdd02e110b3 # v0.17.8
+        with:
+          image: ${{ env.IMAGE_NAME }}:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
 
       - name: Integration test - run container and check /metrics
         run: |
@@ -110,7 +120,6 @@ jobs:
             docker logs "$CONTAINER_NAME" || true
             exit 1
           }
-          # cleanup handled by trap
 
       - name: Start container for DAST
         run: |
@@ -122,18 +131,18 @@ jobs:
           curl -fsS http://localhost:8080/ || (echo "App did not start" >&2; docker logs hello-ci; exit 1)
 
       - name: OWASP ZAP Baseline (DAST)
-        uses: zaproxy/action-baseline@v0.10.0
-        continue-on-error: true
+        uses: zaproxy/action-baseline@7cea08522cd386f6e59892e680b67a28898d3823 # v0.12.0
         with:
           target: 'http://localhost:8080'
           cmd_options: '-m 1'
+          fail_action: true  # Fail pipeline on HIGH/CRITICAL findings
 
       - name: Stop DAST container
         if: always()
         run: docker rm -f hello-ci || true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
 
       - name: Determine image tag
         run: |
@@ -142,67 +151,58 @@ jobs:
             TAG="${REF#refs/tags/}"
             TAG="${TAG#release/}"
             echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-            echo "PUSH_LATEST=true" >> $GITHUB_ENV
+            echo "PUSH_LATEST=false" >> $GITHUB_ENV
           elif [[ "$REF" == "refs/heads/main" ]]; then
-            echo "IMAGE_TAG=latest" >> $GITHUB_ENV
-            echo "PUSH_LATEST=true" >> $GITHUB_ENV
+            echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> $GITHUB_ENV
+            echo "PUSH_LATEST=false" >> $GITHUB_ENV
           else
             echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> $GITHUB_ENV
             echo "PUSH_LATEST=false" >> $GITHUB_ENV
           fi
 
-      - name: Emulate image signing
-        run: |
-          echo "IMAGE_SIGNED=true" >> $GITHUB_ENV
-          echo "signed-by=example-cert" > image.signature
-
-      - name: Verify signature (gate push)
-        run: |
-          test -f image.signature || { echo "Signature missing" >&2; exit 1; }
+      - name: Install cosign
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
 
       - name: Get AWS ECR login password and login
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')) && env.IMAGE_SIGNED == 'true'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
         run: |
           aws ecr get-login-password --region $AWS_REGION | \
             docker login --username AWS --password-stdin $(aws sts get-caller-identity --query 'Account' --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 
       - name: Set ECR registry env
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')) && env.IMAGE_SIGNED == 'true'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           echo "ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com" >> $GITHUB_ENV
 
       - name: Tag and push Docker image
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')) && env.IMAGE_SIGNED == 'true'
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
         run: |
           set -euo pipefail
           docker tag $IMAGE_NAME:ci $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
           docker tag $IMAGE_NAME:ci $ECR_REGISTRY/$ECR_REPOSITORY:sha-${GITHUB_SHA}
-          if [[ "${PUSH_LATEST}" == "true" ]]; then
-            docker tag $IMAGE_NAME:ci $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          fi
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:sha-${GITHUB_SHA}
-          if [[ "${PUSH_LATEST}" == "true" ]]; then
-            docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          fi
+          # Capture image digest for immutable reference
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG} 2>/dev/null || echo "")
+          echo "IMAGE_DIGEST=${DIGEST}" >> $GITHUB_ENV
 
-      - name: Run DB migrations (prod)
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')) && env.DB_MIGRATION_URL != ''
-        working-directory: ${{ github.workspace }}
-        env:
-          DATABASE_URL: ${{ env.DB_MIGRATION_URL }}
+      - name: Sign image with cosign (keyless)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
         run: |
-          set -euo pipefail
-          test -d hello-world/migrations || { echo "migrations dir not found"; exit 1; }
-          docker run --rm \
-            -v "$PWD/hello-world/migrations:/migrations:ro" \
-            -e DATABASE_URL="$DATABASE_URL" \
-            migrate/migrate:v4.17.0 \
-            -path=/migrations -database "$DATABASE_URL" up
+          cosign sign --yes $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
+          cosign sign --yes $ECR_REGISTRY/$ECR_REPOSITORY:sha-${GITHUB_SHA}
+
+      - name: Attach SBOM to image
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
+        run: |
+          cosign attach sbom --sbom sbom.spdx.json $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
+
+      - name: Attest SBOM (SLSA provenance)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
+        run: |
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
 
       - name: Validate alerting rules with promtool
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/release/')
@@ -213,7 +213,7 @@ jobs:
 
       - name: Install kubectl
         if: github.ref == 'refs/heads/main'
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
         with:
           version: "v1.29.4"
 
@@ -226,18 +226,10 @@ jobs:
         working-directory: hello-world
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
       - name: Build PR Docker image
         run: docker build -t $IMAGE_NAME:pr-${{ github.event.number }} .
-
-      - name: Emulate image signing (PR)
-        run: |
-          echo "IMAGE_SIGNED=true" >> $GITHUB_ENV
-          echo "signed-by=example-cert" > image.signature
-
-      - name: Verify signature (gate push)
-        run: test -f image.signature
 
       - name: ECR login (PR)
         run: |
@@ -250,9 +242,6 @@ jobs:
           echo "ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com" >> $GITHUB_ENV
 
       - name: Push PR image
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
         run: |
           set -euo pipefail
           docker tag $IMAGE_NAME:pr-${{ github.event.number }} $ECR_REGISTRY/$ECR_REPOSITORY:pr-${{ github.event.number }}
@@ -264,10 +253,10 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
       - name: Ensure kubectl available
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
         with:
           version: "v1.29.4"
 
@@ -287,4 +276,3 @@ jobs:
             kubectl apply -f hello-world/deploy/flux/hello-world-helmrelease.yaml
           fi
           echo "Deploy step complete"
-

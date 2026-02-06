@@ -26,6 +26,7 @@ resource "random_password" "master_password" {
 resource "aws_secretsmanager_secret" "db_credentials" {
   name_prefix = "${var.name_prefix}-db-credentials-"
   description = "Database credentials for ${var.name_prefix}"
+  kms_key_id  = var.kms_key_id
 
   tags = merge(var.tags, {
     Name        = "${var.name_prefix}-db-credentials"
@@ -82,6 +83,17 @@ resource "aws_security_group_rule" "rds_ingress" {
   description              = "PostgreSQL access from ${each.value}"
 }
 
+# Restrict egress to VPC CIDR only
+resource "aws_security_group_rule" "rds_egress_vpc" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.rds.id
+  cidr_blocks       = [var.vpc_cidr_block]
+  description       = "Allow egress to VPC CIDR only"
+}
+
 # RDS Parameter Group
 resource "aws_db_parameter_group" "main" {
   name_prefix = "${var.name_prefix}-"
@@ -127,6 +139,9 @@ resource "aws_db_instance" "main" {
   password = var.master_password != null ? var.master_password : random_password.master_password[0].result
   port     = 5432
 
+  # IAM Authentication
+  iam_database_authentication_enabled = var.iam_authentication_enabled
+
   # Network
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
@@ -144,6 +159,7 @@ resource "aws_db_instance" "main" {
   monitoring_interval             = var.monitoring_interval
   monitoring_role_arn             = var.monitoring_interval > 0 ? aws_iam_role.rds_monitoring[0].arn : null
   performance_insights_enabled    = var.performance_insights_enabled
+  performance_insights_kms_key_id          = var.kms_key_id
   performance_insights_retention_period = var.performance_insights_retention_period
 
   # Parameters

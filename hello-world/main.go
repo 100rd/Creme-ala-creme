@@ -56,11 +56,24 @@ func (c dependencyChecker) pingDatabase(ctx context.Context) error {
 
 func (c dependencyChecker) readinessHandler(w http.ResponseWriter, r *http.Request) {
 	if err := c.pingDatabase(r.Context()); err != nil {
-		http.Error(w, fmt.Sprintf("not ready: %v", err), http.StatusServiceUnavailable)
+		logger.Warn().Err(err).Msg("readiness check failed")
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready"))
+}
+
+// securityHeaders adds standard HTTP security headers to all responses.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (c dependencyChecker) livenessHandler(w http.ResponseWriter, r *http.Request) {
@@ -244,8 +257,13 @@ func main() {
 		addr = ":" + p
 	}
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           securityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
 	}
 
 	serverErr := make(chan error, 1)

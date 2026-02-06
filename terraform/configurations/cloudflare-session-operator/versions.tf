@@ -1,6 +1,14 @@
 terraform {
   required_version = "~> 1.6"
 
+  backend "s3" {
+    bucket         = "creme-terraform-state"
+    key            = "cloudflare-session-operator/terraform.tfstate"
+    region         = "eu-central-1"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -16,5 +24,3 @@ terraform {
     }
   }
 }
-
-

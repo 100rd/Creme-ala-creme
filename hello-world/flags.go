@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -108,35 +109,36 @@ func adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		apiKey := os.Getenv("ADMIN_API_KEY")
 
-		// If no API key configured, warn and allow (dev mode)
+		// Fail closed: if no API key is configured, reject all requests
 		if apiKey == "" {
 			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
 				Str("path", r.URL.Path).
-				Msg("admin endpoint accessed without authentication (ADMIN_API_KEY not set)")
-			next(w, r)
+				Msg("admin endpoint rejected: ADMIN_API_KEY not configured")
+			http.Error(w, "Forbidden: admin API key not configured", http.StatusForbidden)
 			return
 		}
 
-		// Check Authorization header (Bearer token)
+		// Check Authorization header (Bearer token) — constant-time comparison
 		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" && authHeader == "Bearer "+apiKey {
+		expected := "Bearer " + apiKey
+		if authHeader != "" && subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) == 1 {
 			next(w, r)
 			return
 		}
 
-		// Check X-Admin-API-Key header
+		// Check X-Admin-API-Key header — constant-time comparison
 		providedKey := r.Header.Get("X-Admin-API-Key")
-		if providedKey == "" || providedKey != apiKey {
-			logger.Warn().
-				Str("remote_addr", r.RemoteAddr).
-				Str("path", r.URL.Path).
-				Msg("unauthorized admin endpoint access attempt")
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if providedKey != "" && subtle.ConstantTimeCompare([]byte(providedKey), []byte(apiKey)) == 1 {
+			next(w, r)
 			return
 		}
 
-		next(w, r)
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("path", r.URL.Path).
+			Msg("unauthorized admin endpoint access attempt")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
 
@@ -165,10 +167,14 @@ func adminFlagsHandler(w http.ResponseWriter, r *http.Request) {
 				ov.Metrics = &b
 			}
 		}
-		// support JSON body
+		// support JSON body (limit to 1KB to prevent memory exhaustion)
 		var body flagOverrides
 		if ct := r.Header.Get("Content-Type"); ct == "application/json" || ct == "application/json; charset=utf-8" {
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			r.Body = http.MaxBytesReader(w, r.Body, 1024)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "Bad Request: invalid JSON", http.StatusBadRequest)
+				return
+			}
 			if body.Tracing != nil {
 				ov.Tracing = body.Tracing
 			}

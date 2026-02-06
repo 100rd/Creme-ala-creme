@@ -27,14 +27,15 @@ jobs:
       matrix:
         working_directory:
           - terraform/configurations/cloudflare-session-operator
+          - terraform/configurations/hello-world-database
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
           fetch-depth: 0
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@a1502cd9e758c50496cc9ac5308c4843bcd56d36 # v3.0.0
         with:
           terraform_version: '1.6.6'
           cli_config_credentials_token: ''
@@ -48,4 +49,35 @@ jobs:
       - name: Terraform validate
         run: terraform -chdir=${{ matrix.working_directory }} validate -no-color
 
+  security-scan:
+    name: security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        working_directory:
+          - terraform/configurations/cloudflare-session-operator
+          - terraform/configurations/hello-world-database
+          - terraform/modules/rds-postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          fetch-depth: 0
 
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ matrix.working_directory }}
+          framework: terraform
+          soft_fail: false
+          output_format: cli
+
+      - name: Run Trivy IaC scan
+        uses: aquasecurity/trivy-action@d9cd5b1c23aaf8cb31bb09141028c8bd06b2fc70 # v0.26.0
+        with:
+          scan-type: config
+          scan-ref: ${{ matrix.working_directory }}
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,16 +13,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-)
-
-func Test_parseBoolEnv(t *testing.T) {
-	tests := []struct {
-		in   string
-		def  bool
-		want bool
-=======
-	"os"
-	"testing"
 )
 
 func TestGetBoolEnv(t *testing.T) {
@@ -65,7 +56,6 @@ func TestTracingExportsAfterAdminEnable(t *testing.T) {
 	defaultTracing.Store(false)
 	defaultMetrics.Store(false)
 	overridesValue.Store(flagOverrides{})
-	metricsEnabled = false
 	mtr = nil
 
 	// Reset tracer state

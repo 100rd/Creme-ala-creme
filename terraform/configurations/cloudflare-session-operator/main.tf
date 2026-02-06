@@ -38,7 +38,7 @@ module "s3_bucket" {
   server_side_encryption_configuration = {
     rule = {
       apply_server_side_encryption_by_default = {
-        sse_algorithm = "AES256"
+        sse_algorithm = "aws:kms"
       }
     }
   }
@@ -87,6 +87,8 @@ module "db" {
   publicly_accessible = false
   multi_az            = var.db_multi_az
 
+  storage_encrypted   = true
+
   backup_retention_period = var.db_backup_retention
   deletion_protection     = var.db_deletion_protection
   skip_final_snapshot     = var.db_skip_final_snapshot
@@ -114,5 +116,3 @@ resource "kafka_topic" "sessions" {
   replication_factor = var.kafka_default_replication_factor
   config             = merge(var.kafka_default_topic_config, var.kafka_sessions_topic_overrides)
 }
-
-
