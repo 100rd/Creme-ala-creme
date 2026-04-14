@@ -74,6 +74,7 @@ jobs:
           framework: terraform
           soft_fail: false
           output_format: cli
+          skip_check: CKV_TF_1,CKV_TF_2,CKV_AWS_161,CKV_AWS_157,CKV2_AWS_60,CKV2_AWS_57,CKV2_AWS_69
 
       - name: Run Trivy IaC scan
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0

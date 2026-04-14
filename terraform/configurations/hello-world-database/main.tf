@@ -69,6 +69,7 @@ module "hello_world_db" {
 
   # Network
   vpc_id                     = var.vpc_id
+  vpc_cidr_block             = data.aws_vpc.main.cidr_block
   subnet_ids                 = data.aws_subnets.database.ids
   allowed_security_group_ids = [data.aws_security_group.eks_pods.id]
 
