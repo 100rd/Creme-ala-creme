@@ -1,13 +1,12 @@
 {{- if .Values.serviceAccount.create }}
-# ClusterRole for SessionBinding CRD management
+# ClusterRole for CRD-level access (CRDs are cluster-scoped resources)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "cloudflare-session-operator.fullname" . }}
+  name: {{ include "cloudflare-session-operator.fullname" . }}-crd
   labels:
     {{- include "cloudflare-session-operator.labels" . | nindent 4 }}
 rules:
-  # SessionBinding CRD access
   - apiGroups: ["cloudflare.example.com"]
     resources: ["sessionbindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -17,6 +16,30 @@ rules:
   - apiGroups: ["cloudflare.example.com"]
     resources: ["sessionbindings/finalizers"]
     verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cloudflare-session-operator.fullname" . }}-crd
+  labels:
+    {{- include "cloudflare-session-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cloudflare-session-operator.fullname" . }}-crd
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cloudflare-session-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Namespace-scoped Role for pod/deployment/event access (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cloudflare-session-operator.fullname" . }}
+  labels:
+    {{- include "cloudflare-session-operator.labels" . | nindent 4 }}
+rules:
   # Pod management (create session pods)
   - apiGroups: [""]
     resources: ["pods"]
@@ -31,14 +54,14 @@ rules:
     verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "cloudflare-session-operator.fullname" . }}
   labels:
     {{- include "cloudflare-session-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "cloudflare-session-operator.fullname" . }}
 subjects:
   - kind: ServiceAccount

@@ -24,13 +24,23 @@ spec:
               properties:
                 sessionID:
                   type: string
+                  description: "Cloudflare session identifier. Must be alphanumeric with hyphens/underscores."
+                  pattern: "^[a-zA-Z0-9_-]{1,128}$"
+                  minLength: 1
+                  maxLength: 128
                 userID:
                   type: string
                 targetDeployment:
                   type: string
+                  description: "Name of the deployment to clone pod template from."
+                  minLength: 1
+                  maxLength: 253
                 ttlSeconds:
                   type: integer
                   format: int64
+                  description: "How long the binding remains active after creation (60-86400 seconds)."
+                  minimum: 60
+                  maximum: 86400
             status:
               type: object
               properties:
