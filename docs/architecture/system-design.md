@@ -26,9 +26,12 @@ The operator code lives in `cloudflare-session-operator/` and consists of:
 | `main.go` | Manager bootstrap, health probes, leader election |
 | `controllers/sessionbinding_controller.go` | Reconciliation loop, pod management, status conditions |
 | `api/v1alpha1/sessionbinding_types.go` | CRD types with status conditions |
+| `api/v1alpha1/cloudflareoperatorconfig_types.go` | Cluster-scoped operator configuration CRD |
 | `api/v1alpha1/groupversion_info.go` | Scheme registration |
 | `pkg/cloudflare/client.go` | Cloudflare API client (currently stubbed) |
-| `config/crd/bases/` | CRD YAML |
+| `config/crd/bases/` | CRD YAMLs |
+| `config/samples/` | Example CR manifests per environment |
+| `deploy/argocd/` | ArgoCD Application manifests for GitOps |
 | `DEPLOYMENT_BLOCKED.md` | Known blockers |
 
 ### 1.2 What Is Good
@@ -287,7 +290,19 @@ module "k8s_operator" {
 }
 ```
 
-### 8.3 IRSA
+### 8.3 Separation of Concerns
+
+Terraform provisions **infrastructure only**: AWS resources (RDS, S3), Kubernetes namespace,
+RBAC, IRSA, quotas. Application-level runtime configuration (Kafka brokers, topic names,
+feature flags, reconciliation tuning) is managed **inside the cluster** via the
+`CloudflareOperatorConfig` CRD (see section 9).
+
+This separation was enforced by removing all app-config variables (`kafka_*`, `db_name`,
+`db_username`) from the Terraform configuration. The Kafka provider and topic resources
+were also removed -- Kafka topic management belongs to the data platform team or a dedicated
+Kafka operator, not the application Terraform configuration.
+
+### 8.4 IRSA
 
 The operator needs an IAM role for:
 - Secrets Manager read access (for ESO to pull Cloudflare creds)
@@ -297,13 +312,124 @@ The IRSA annotation on the ServiceAccount enables pod-level IAM without node-lev
 
 ---
 
-## 9. CI/CD Pipeline Parity
+## 9. In-Cluster Configuration
 
-### 9.1 Current State
+### 9.1 Why Not Terraform for App Config
+
+Terraform's purpose is infrastructure provisioning: creating AWS resources, Kubernetes
+namespaces, RBAC bindings, and IAM roles. Application-level runtime configuration -- such as
+Kafka broker addresses, topic names, feature flags, and reconciliation tuning -- does not
+belong in Terraform for several reasons:
+
+1. **Lifecycle mismatch**: Infrastructure changes require `plan` + `apply` with state locking.
+   Changing a Kafka topic name should not require a Terraform run.
+2. **Blast radius**: A Terraform apply touches all resources in the configuration. Changing a
+   feature flag should not risk modifying RDS or S3 resources.
+3. **Operational friction**: Developers who need to toggle dry-run mode or adjust reconciliation
+   concurrency should not need Terraform access or state file permissions.
+4. **GitOps incompatibility**: Terraform state is not a Kubernetes-native concept. ArgoCD cannot
+   manage Terraform variables, but it can manage CRs natively.
+
+### 9.2 The CRD-Based Config Pattern
+
+The operator uses a cluster-scoped Custom Resource (`CloudflareOperatorConfig`) as its single
+source of truth for runtime behavior. By convention, exactly one instance named `default`
+exists in the cluster.
+
+```yaml
+apiVersion: cloudflare.example.com/v1alpha1
+kind: CloudflareOperatorConfig
+metadata:
+  name: default
+spec:
+  kafka:
+    bootstrapServers: "b-1.msk-prod.example:9094,b-2.msk-prod.example:9094"
+    tlsEnabled: true
+    topics:
+      sessions: "sessions"
+      ids: "id"
+  features:
+    tracingEnabled: true
+    metricsEnabled: true
+    cloudflareAPIEnabled: true
+    dryRunMode: false
+  reconciliation:
+    requeueDuration: 30s
+    maxConcurrentReconciles: 3
+```
+
+The operator watches this CR and reloads configuration dynamically without requiring a pod
+restart. Status conditions on the CR reflect whether the configuration was successfully
+applied, providing clear observability into config state.
+
+### 9.3 How Configuration Flows
+
+```
+Git repo (config/samples/)
+       |
+       v
+  ArgoCD Application  --sync-->  CloudflareOperatorConfig CR
+       |                                    |
+       |                         Operator watches via informer
+       |                                    |
+       v                                    v
+  Git history provides          Operator reloads config,
+  audit trail + rollback        updates status.observedGeneration
+```
+
+**GitOps path (standard)**: Config YAML lives in `config/samples/`. ArgoCD watches the repo
+and applies changes to the cluster. The operator detects the CR update via its informer and
+reloads.
+
+**Direct path (ad-hoc)**: For urgent changes, operators can `kubectl apply` the CR directly.
+ArgoCD self-heal will eventually reconcile it back to the Git state, so any direct change
+must also be committed to Git.
+
+### 9.4 ArgoCD Integration
+
+An ArgoCD Application manifest (`deploy/argocd/operator-config-app.yaml`) manages the
+`CloudflareOperatorConfig` CR via GitOps:
+
+- **Source**: `cloudflare-session-operator/config/samples/` in Git
+- **Destination**: `cloudflare-system` namespace in the target cluster
+- **Sync policy**: Automated with prune and self-heal enabled
+
+This means changing operator configuration is a standard Git workflow: edit the YAML, open a
+PR, merge, and ArgoCD applies it.
+
+### 9.5 Environment-Specific Configuration
+
+Each environment has its own config sample:
+
+| File | Environment | Key differences |
+|------|-------------|-----------------|
+| `config_default_dev.yaml` | Development | Local Kafka, dry-run enabled, low concurrency |
+| `config_default_prod.yaml` | Production | MSK brokers with TLS, live API, higher concurrency |
+
+ArgoCD selects the correct file per-cluster via its Application `path` or overlay mechanism.
+
+### 9.6 Why Not Consul, flagd, or ConfigMap
+
+| Approach | Verdict | Reason |
+|----------|---------|--------|
+| **CRD (chosen)** | Best fit | Zero new dependencies; operator already watches CRDs; ArgoCD-native; typed schema with validation; status feedback; `kubectl get cfoc` visibility |
+| **ConfigMap** | Acceptable but weaker | No schema validation; no status feedback; no printer columns; untyped string data; still Kubernetes-native |
+| **Consul** | Rejected | Requires deploying and operating a Consul cluster; overkill for single-operator config; adds network dependency; not Kubernetes-native |
+| **flagd/OpenFeature** | Complementary | Good for dynamic per-request feature flags in HTTP services; the operator's config is structural (broker addresses, concurrency) not per-request; flagd can be added later for fine-grained flags |
+
+The CRD pattern is the standard Kubernetes operator approach. The operator already has a
+controller-runtime manager watching CRDs, so adding a config watch is a natural extension
+with zero new infrastructure.
+
+---
+
+## 10. CI/CD Pipeline Parity
+
+### 10.1 Current State
 
 The CI pipeline (`ci.yml`) only covers `hello-world/`. The operator has zero CI coverage.
 
-### 9.2 Required Pipeline Additions
+### 10.2 Required Pipeline Additions
 
 Add a new job `operator-lint-build-test` mirroring `lint-build-test` but for the operator:
 
@@ -318,7 +444,7 @@ Add a new job `operator-lint-build-test` mirroring `lint-build-test` but for the
 9. Trivy image scan
 10. cosign signing (on main branch push)
 
-### 9.3 Helm Chart Validation
+### 10.3 Helm Chart Validation
 
 Add `helm lint` for the operator chart in CI:
 ```yaml
@@ -328,15 +454,15 @@ Add `helm lint` for the operator chart in CI:
 
 ---
 
-## 10. Testing Strategy
+## 11. Testing Strategy
 
-### 10.1 Unit Tests
+### 11.1 Unit Tests
 
 - `controllers/sessionbinding_controller_test.go`: Test reconciliation logic with fake client.
 - `pkg/cloudflare/client_test.go`: Test API client with HTTP test server.
 - `pkg/flags/flags_test.go`: Test feature flag evaluation.
 
-### 10.2 Integration Tests (envtest)
+### 11.2 Integration Tests (envtest)
 
 Use controller-runtime's `envtest` package to spin up a real API server:
 - Test full reconciliation cycle: create binding -> verify pod created -> verify status.
@@ -344,7 +470,7 @@ Use controller-runtime's `envtest` package to spin up a real API server:
 - Test error scenarios: missing deployment, Cloudflare API errors.
 - Test TTL enforcement.
 
-### 10.3 End-to-End Tests
+### 11.3 End-to-End Tests
 
 - Deploy operator to a kind cluster.
 - Create `SessionBinding` CRs and verify pod creation.
@@ -353,7 +479,7 @@ Use controller-runtime's `envtest` package to spin up a real API server:
 
 ---
 
-## 11. Implementation Plan
+## 12. Implementation Plan
 
 ### Phase 1: Foundation (Files to create/modify)
 
@@ -380,11 +506,21 @@ Use controller-runtime's `envtest` package to spin up a real API server:
 | Create | `terraform/modules/k8s-operator/variables.tf` | Module inputs |
 | Create | `terraform/modules/k8s-operator/outputs.tf` | Module outputs |
 | Create | `terraform/modules/k8s-operator/README.md` | Module documentation |
-| Update | `terraform/configurations/cloudflare-session-operator/dev/terraform.tfvars` | Add module vars |
-| Update | `terraform/configurations/cloudflare-session-operator/stage/terraform.tfvars` | Add module vars |
-| Update | `terraform/configurations/cloudflare-session-operator/prod/terraform.tfvars` | Add module vars |
+| Update | `terraform/configurations/cloudflare-session-operator/dev/terraform.tfvars` | Infra-only vars |
+| Update | `terraform/configurations/cloudflare-session-operator/stage/terraform.tfvars` | Infra-only vars |
+| Update | `terraform/configurations/cloudflare-session-operator/prod/terraform.tfvars` | Infra-only vars |
 
-### Phase 3: CI/CD Updates
+### Phase 3: In-Cluster Configuration
+
+| Action | File | Description |
+|--------|------|-------------|
+| Create | `api/v1alpha1/cloudflareoperatorconfig_types.go` | Config CRD Go types |
+| Create | `config/crd/bases/cloudflare.example.com_cloudflareoperatorconfigs.yaml` | Config CRD manifest |
+| Create | `config/samples/config_default_dev.yaml` | Dev config CR |
+| Create | `config/samples/config_default_prod.yaml` | Prod config CR |
+| Create | `deploy/argocd/operator-config-app.yaml` | ArgoCD Application |
+
+### Phase 4: CI/CD Updates
 
 | Action | File | Description |
 |--------|------|-------------|
@@ -392,7 +528,7 @@ Use controller-runtime's `envtest` package to spin up a real API server:
 
 ---
 
-## 12. Risk Assessment
+## 13. Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
@@ -400,6 +536,7 @@ Use controller-runtime's `envtest` package to spin up a real API server:
 | RBAC over-permissioning | Low | High | Audit with `kubectl auth can-i`, principle of least privilege |
 | Pod sprawl from operator | Medium | High | ResourceQuota, MaxSessionsPerNamespace flag |
 | Breaking existing Terraform state | Low | Medium | New module only, no changes to existing resources |
+| Config CR not found at startup | Low | Medium | Operator falls back to sane defaults, logs warning |
 
 ---
 
@@ -434,6 +571,12 @@ Use controller-runtime's `envtest` package to spin up a real API server:
               |  | +--------v-----------+ | |
               |  | |  Session Pods      | | |
               |  | +--------------------+ | |
+              |  +------------------------+ |
+              |                             |
+              |  +------------------------+ |
+              |  | CloudflareOperator     | |
+              |  | Config CR (cluster)    | |
+              |  | Managed by ArgoCD      | |
               |  +------------------------+ |
               |                             |
               |  +------------------------+ |

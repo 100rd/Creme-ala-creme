@@ -1,0 +1,129 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cloudflareoperatorconfigs.cloudflare.example.com
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: cloudflare.example.com
+  names:
+    kind: CloudflareOperatorConfig
+    listKind: CloudflareOperatorConfigList
+    plural: cloudflareoperatorconfigs
+    singular: cloudflareoperatorconfig
+    shortNames:
+      - cfoc
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Kafka Brokers
+          type: string
+          jsonPath: .spec.kafka.bootstrapServers
+        - name: Tracing
+          type: boolean
+          jsonPath: .spec.features.tracingEnabled
+        - name: DryRun
+          type: boolean
+          jsonPath: .spec.features.dryRunMode
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            CloudflareOperatorConfig is the cluster-scoped configuration resource
+            for the operator. Exactly one instance should exist (by convention
+            named "default"). Managed via ArgoCD or applied directly with kubectl.
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: CloudflareOperatorConfigSpec defines the desired configuration for the operator.
+              type: object
+              properties:
+                kafka:
+                  description: Kafka holds connection and topic configuration.
+                  type: object
+                  properties:
+                    bootstrapServers:
+                      description: BootstrapServers is a comma-separated list of broker addresses.
+                      type: string
+                    tlsEnabled:
+                      description: TLSEnabled enables TLS for Kafka connections.
+                      type: boolean
+                    topics:
+                      description: Topics holds topic name configuration.
+                      type: object
+                      properties:
+                        sessions:
+                          description: Sessions is the topic name for session events.
+                          type: string
+                        ids:
+                          description: IDs is the topic name for ID events.
+                          type: string
+                reconciliation:
+                  description: Reconciliation holds reconciliation loop tuning.
+                  type: object
+                  properties:
+                    requeueDuration:
+                      description: "RequeueDuration is how long to wait before requeuing a failed reconciliation (default: 30s)."
+                      type: string
+                    maxConcurrentReconciles:
+                      description: "MaxConcurrentReconciles controls parallelism (default: 1)."
+                      type: integer
+                      minimum: 1
+                features:
+                  description: Features holds feature flag configuration.
+                  type: object
+                  properties:
+                    tracingEnabled:
+                      description: TracingEnabled enables distributed tracing via OTEL.
+                      type: boolean
+                    metricsEnabled:
+                      description: MetricsEnabled enables Prometheus metrics endpoint.
+                      type: boolean
+                    cloudflareAPIEnabled:
+                      description: CloudflareAPIEnabled enables live Cloudflare API calls (false = dry-run mode).
+                      type: boolean
+                    dryRunMode:
+                      description: DryRunMode when true logs actions but does not apply them.
+                      type: boolean
+            status:
+              description: CloudflareOperatorConfigStatus reflects the last-applied configuration generation.
+              type: object
+              properties:
+                observedGeneration:
+                  description: ObservedGeneration is the generation of the spec last processed.
+                  type: integer
+                  format: int64
+                conditions:
+                  description: Conditions reflect the current state.
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status, reason, message]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+      subresources:
+        status: {}
