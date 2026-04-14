@@ -62,15 +62,16 @@ data "aws_security_group" "eks_pods" {
 
 # RDS PostgreSQL instance for hello-world
 module "hello_world_db" {
-  source = "../../modules/rds-postgres"
+  source = "git::https://github.com/100rd/platform-design//terraform/modules/rds-postgres?ref=v0.1.0"
 
   name_prefix = "hello-world-${var.environment}"
   environment = var.environment
 
   # Network
-  vpc_id                      = var.vpc_id
-  subnet_ids                  = data.aws_subnets.database.ids
-  allowed_security_group_ids  = [data.aws_security_group.eks_pods.id]
+  vpc_id                     = var.vpc_id
+  vpc_cidr_block             = data.aws_vpc.main.cidr_block
+  subnet_ids                 = data.aws_subnets.database.ids
+  allowed_security_group_ids = [data.aws_security_group.eks_pods.id]
 
   # Database
   database_name   = var.database_name
@@ -78,9 +79,9 @@ module "hello_world_db" {
   # master_password is generated automatically if not provided
 
   # Instance sizing
-  engine_version    = var.engine_version
-  instance_class    = var.instance_class
-  allocated_storage = var.allocated_storage
+  engine_version        = var.engine_version
+  instance_class        = var.instance_class
+  allocated_storage     = var.allocated_storage
   max_allocated_storage = var.max_allocated_storage
 
   # High Availability (enable for production)

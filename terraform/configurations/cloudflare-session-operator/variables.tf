@@ -44,18 +44,6 @@ variable "db_max_allocated_storage" {
   default     = 100
 }
 
-variable "db_name" {
-  description = "Database name"
-  type        = string
-  default     = "sessions"
-}
-
-variable "db_username" {
-  description = "Master username"
-  type        = string
-  default     = "app"
-}
-
 variable "db_master_password" {
   description = "Master password (if not provided, a random password will be generated)"
   type        = string
@@ -93,109 +81,49 @@ variable "db_performance_insights_enabled" {
   default     = false
 }
 
-variable "kafka_bootstrap_servers" {
-  description = "List of Kafka bootstrap servers (host:port)"
-  type        = list(string)
-}
+# --------------------------------------------------------------------------
+# k8s-operator module variables
+# --------------------------------------------------------------------------
 
-variable "kafka_tls_enabled" {
-  description = "Enable TLS for Kafka client"
-  type        = bool
-  default     = true
-}
-
-variable "kafka_skip_tls_verify" {
-  description = "Skip TLS verification"
-  type        = bool
-  default     = false
-}
-
-variable "kafka_ca_cert" {
-  description = "PEM-encoded CA certificate for Kafka TLS"
+variable "k8s_operator_namespace" {
+  description = "Kubernetes namespace for the operator"
   type        = string
-  default     = null
+  default     = "cloudflare-system"
 }
 
-variable "kafka_client_cert" {
-  description = "PEM-encoded client certificate for mTLS"
+variable "k8s_operator_iam_role_arn" {
+  description = "IAM role ARN for IRSA annotation on the operator ServiceAccount"
   type        = string
-  default     = null
+  default     = ""
 }
 
-variable "kafka_client_key" {
-  description = "PEM-encoded client key for mTLS"
+variable "k8s_operator_pod_security" {
+  description = "Pod Security Standards level for the operator namespace"
   type        = string
-  default     = null
-  sensitive   = true
+  default     = "restricted"
 }
 
-variable "kafka_sasl_username" {
-  description = "SASL username for Kafka"
-  type        = string
-  default     = null
+variable "k8s_operator_resource_quota" {
+  description = "Resource quota for the operator namespace (null to disable)"
+  type = object({
+    requests_cpu    = string
+    requests_memory = string
+    limits_cpu      = string
+    limits_memory   = string
+    pods            = string
+  })
+  default = null
 }
 
-variable "kafka_sasl_password" {
-  description = "SASL password for Kafka"
-  type        = string
-  default     = null
-  sensitive   = true
+variable "k8s_operator_limit_range" {
+  description = "Limit range for containers in the operator namespace (null to disable)"
+  type = object({
+    default_cpu            = string
+    default_memory         = string
+    default_request_cpu    = string
+    default_request_memory = string
+    max_cpu                = string
+    max_memory             = string
+  })
+  default = null
 }
-
-variable "kafka_sasl_mechanism" {
-  description = "SASL mechanism: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, etc."
-  type        = string
-  default     = null
-}
-
-variable "kafka_topic_id_name" {
-  description = "Name of the ID topic"
-  type        = string
-  default     = "id"
-}
-
-variable "kafka_topic_sessions_name" {
-  description = "Name of the sessions topic"
-  type        = string
-  default     = "sessions"
-}
-
-variable "kafka_default_partitions" {
-  description = "Default number of partitions for topics"
-  type        = number
-  default     = 3
-}
-
-variable "kafka_default_replication_factor" {
-  description = "Default replication factor for topics"
-  type        = number
-  default     = 3
-}
-
-variable "kafka_default_topic_config" {
-  description = "Default topic-level configuration applied to all topics"
-  type        = map(string)
-  default = {
-    "cleanup.policy"        = "delete"
-    "retention.ms"          = "604800000" # 7 days
-    "min.insync.replicas"   = "2"
-    "segment.ms"            = "3600000"   # 1 hour
-    "retention.bytes"       = "-1"
-  }
-}
-
-variable "kafka_id_topic_overrides" {
-  description = "Overrides for the ID topic configuration"
-  type        = map(string)
-  default     = {}
-}
-
-variable "kafka_sessions_topic_overrides" {
-  description = "Overrides for the sessions topic configuration (stream config)"
-  type        = map(string)
-  default = {
-    "cleanup.policy" = "compact,delete"
-  }
-}
-
-

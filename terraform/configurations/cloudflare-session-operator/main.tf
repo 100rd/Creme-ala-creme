@@ -9,18 +9,6 @@ provider "aws" {
   }
 }
 
-provider "kafka" {
-  bootstrap_servers = var.kafka_bootstrap_servers
-  tls_enabled       = var.kafka_tls_enabled
-  skip_tls_verify   = var.kafka_skip_tls_verify
-  ca_cert           = var.kafka_ca_cert
-  client_cert       = var.kafka_client_cert
-  client_key        = var.kafka_client_key
-  sasl_username     = var.kafka_sasl_username
-  sasl_password     = var.kafka_sasl_password
-  sasl_mechanism    = var.kafka_sasl_mechanism
-}
-
 ############################
 # S3 bucket for the app
 ############################
@@ -70,14 +58,14 @@ module "db" {
 
   identifier = "${var.app_name}-postgres"
 
-  engine               = "postgres"
-  engine_version       = var.db_engine_version
-  instance_class       = var.db_instance_class
-  allocated_storage    = var.db_allocated_storage
+  engine                = "postgres"
+  engine_version        = var.db_engine_version
+  instance_class        = var.db_instance_class
+  allocated_storage     = var.db_allocated_storage
   max_allocated_storage = var.db_max_allocated_storage
 
-  db_name  = var.db_name
-  username = var.db_username
+  db_name  = "sessions"
+  username = "app"
   password = coalesce(var.db_master_password, random_password.db_master.result)
 
   create_db_subnet_group = true
@@ -87,7 +75,7 @@ module "db" {
   publicly_accessible = false
   multi_az            = var.db_multi_az
 
-  storage_encrypted   = true
+  storage_encrypted = true
 
   backup_retention_period = var.db_backup_retention
   deletion_protection     = var.db_deletion_protection
@@ -101,18 +89,15 @@ module "db" {
 }
 
 ############################
-# Kafka topics
+# K8s operator provisioning
 ############################
-resource "kafka_topic" "id" {
-  name               = var.kafka_topic_id_name
-  partitions         = var.kafka_default_partitions
-  replication_factor = var.kafka_default_replication_factor
-  config             = merge(var.kafka_default_topic_config, var.kafka_id_topic_overrides)
-}
+module "k8s_operator" {
+  source = "git::https://github.com/100rd/platform-design//terraform/modules/k8s-operator?ref=v0.1.0"
 
-resource "kafka_topic" "sessions" {
-  name               = var.kafka_topic_sessions_name
-  partitions         = var.kafka_default_partitions
-  replication_factor = var.kafka_default_replication_factor
-  config             = merge(var.kafka_default_topic_config, var.kafka_sessions_topic_overrides)
+  operator_name      = var.app_name
+  namespace          = var.k8s_operator_namespace
+  iam_role_arn       = var.k8s_operator_iam_role_arn
+  pod_security_level = var.k8s_operator_pod_security
+  resource_quota     = var.k8s_operator_resource_quota
+  limit_range        = var.k8s_operator_limit_range
 }

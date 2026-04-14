@@ -1,0 +1,19 @@
+apiVersion: cloudflare.example.com/v1alpha1
+kind: CloudflareOperatorConfig
+metadata:
+  name: default
+spec:
+  kafka:
+    bootstrapServers: "b-1.msk-prod.example:9094,b-2.msk-prod.example:9094,b-3.msk-prod.example:9094"
+    tlsEnabled: true
+    topics:
+      sessions: "sessions"
+      ids: "id"
+  features:
+    tracingEnabled: true
+    metricsEnabled: true
+    cloudflareAPIEnabled: true
+    dryRunMode: false
+  reconciliation:
+    requeueDuration: 30s
+    maxConcurrentReconciles: 3
