@@ -1,13 +1,10 @@
 terraform {
   required_version = "~> 1.6"
 
-  backend "s3" {
-    bucket         = "creme-terraform-state"
-    key            = "cloudflare-session-operator/terraform.tfstate"
-    region         = "eu-central-1"
-    encrypt        = true
-    dynamodb_table = "terraform-locks"
-  }
+  # Backend config is provided per-environment at init time:
+  #   terraform init -backend-config=dev/backend.hcl
+  #   terraform init -backend-config=prod/backend.hcl
+  backend "s3" {}
 
   required_providers {
     aws = {
@@ -17,6 +14,10 @@ terraform {
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.27"
     }
   }
 }

@@ -273,7 +273,7 @@ Provision Kubernetes resources for the operator via Terraform:
 
 ```hcl
 module "k8s_operator" {
-  source = "../../modules/k8s-operator"
+  source = "git::https://github.com/100rd/platform-design//terraform/modules/k8s-operator?ref=v0.1.0"
 
   operator_name      = "cloudflare-session-operator"
   namespace          = "cloudflare-system"
@@ -591,3 +591,117 @@ Use controller-runtime's `envtest` package to spin up a real API server:
                     |  (session mgmt)   |
                     +-------------------+
 ```
+
+---
+
+## 14. Terraform Module and State Strategy
+
+### 14.1 Modules in platform-design
+
+All reusable Terraform modules live in the central platform repository
+(`github.com/100rd/platform-design`). This provides a single source of truth for
+infrastructure patterns, versioned via git tags and consumed by all application repositories.
+
+Application repos reference modules using the git source syntax with a pinned tag:
+
+```hcl
+module "k8s_operator" {
+  source = "git::https://github.com/100rd/platform-design//terraform/modules/k8s-operator?ref=v0.1.0"
+  # ...
+}
+```
+
+**Tagging convention**: Modules are tagged at the repo level using semantic versioning.
+For simple setups, a single tag (e.g., `v0.1.0`) covers all modules in the repo. As the
+platform grows, per-module tags (e.g., `terraform/modules/k8s-operator/v1.0.0`) allow
+independent versioning per module.
+
+**Why centralize modules**:
+
+- **Single source of truth**: One place to fix bugs or apply security patches; all consumers
+  pick up the fix by bumping the ref.
+- **Versioned contracts**: Pinning to a git tag means application repos are never broken by
+  upstream changes until they explicitly upgrade.
+- **Consistency**: Every service uses the same RDS, K8s namespace, and RBAC patterns.
+- **Review efficiency**: Module changes go through a single review process in platform-design
+  rather than being duplicated across dozens of app repos.
+
+### 14.2 Per-Environment State Isolation
+
+Terraform state is stored in a central S3 bucket (`creme-terraform-state`) with DynamoDB
+locking (`terraform-locks`), but each environment gets its own state key. This prevents a
+plan or apply in dev from reading or corrupting prod state.
+
+State key structure:
+
+```
+s3://creme-terraform-state/
+├── cloudflare-session-operator/
+│   ├── dev/terraform.tfstate
+│   ├── stage/terraform.tfstate
+│   └── prod/terraform.tfstate
+└── hello-world/
+    ├── dev/terraform.tfstate
+    └── prod/terraform.tfstate
+```
+
+The backend configuration uses partial config (`backend "s3" {}` in `versions.tf`) with
+per-environment backend files that supply the bucket, key, region, and lock table:
+
+```
+terraform/configurations/cloudflare-session-operator/
+├── versions.tf              # backend "s3" {} (partial)
+├── main.tf                  # module calls + provider
+├── variables.tf             # variable declarations
+├── outputs.tf               # output declarations
+├── dev/
+│   ├── backend.hcl          # key = "cloudflare-session-operator/dev/terraform.tfstate"
+│   └── terraform.tfvars     # dev-specific variable values
+├── stage/
+│   ├── backend.hcl          # key = "cloudflare-session-operator/stage/terraform.tfstate"
+│   └── terraform.tfvars     # stage-specific variable values
+└── prod/
+    ├── backend.hcl          # key = "cloudflare-session-operator/prod/terraform.tfstate"
+    └── terraform.tfvars     # prod-specific variable values
+```
+
+### 14.3 How to Initialize and Plan
+
+To work with a specific environment:
+
+```bash
+# Initialize with the correct backend for the target environment
+terraform init -backend-config=dev/backend.hcl
+
+# Plan with environment-specific variables
+terraform plan -var-file=dev/terraform.tfvars
+
+# Combined init + plan (typical CI workflow)
+terraform init -backend-config=dev/backend.hcl -reconfigure
+terraform plan -var-file=dev/terraform.tfvars -out=plan.tfplan
+```
+
+To switch environments, re-initialize with a different backend config:
+
+```bash
+terraform init -backend-config=prod/backend.hcl -reconfigure
+terraform plan -var-file=prod/terraform.tfvars
+```
+
+### 14.4 What Stays in the Application Repository
+
+Application repositories contain only service-specific configuration. No reusable module
+source code lives here. The following files make up a complete Terraform configuration in
+an app repo:
+
+| File | Purpose |
+|------|---------|
+| `main.tf` | Provider config, remote module calls, service-specific AWS resources |
+| `variables.tf` | Variable declarations with descriptions and defaults |
+| `outputs.tf` | Output values surfaced from module calls |
+| `versions.tf` | `required_version`, `required_providers`, partial `backend "s3" {}` |
+| `{env}/backend.hcl` | Per-environment backend config (bucket, key, region, lock table) |
+| `{env}/terraform.tfvars` | Per-environment variable values |
+
+Anything that is reusable across services (RDS provisioning, K8s namespace setup, IRSA
+roles) belongs in `platform-design` as a module, not in the app repo.

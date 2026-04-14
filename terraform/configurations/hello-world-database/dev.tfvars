@@ -1,8 +1,8 @@
 # Development environment configuration for hello-world database
 
-environment  = "dev"
-aws_region   = "us-east-1"
-team         = "platform"
+environment = "dev"
+aws_region  = "us-east-1"
+team        = "platform"
 
 # Network (update these with your actual values)
 vpc_id       = "vpc-xxxxx"

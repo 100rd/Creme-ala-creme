@@ -1,8 +1,8 @@
 # Production environment configuration for hello-world database
 
-environment  = "prod"
-aws_region   = "us-east-1"
-team         = "platform"
+environment = "prod"
+aws_region  = "us-east-1"
+team        = "platform"
 
 # Network (update these with your actual values)
 vpc_id       = "vpc-xxxxx"
@@ -31,17 +31,17 @@ deletion_protection = true
 skip_final_snapshot = false
 
 # Monitoring (enhanced for production)
-monitoring_interval                   = 30  # More frequent monitoring
+monitoring_interval                   = 30 # More frequent monitoring
 performance_insights_enabled          = true
-performance_insights_retention_period = 31  # Month retention
+performance_insights_retention_period = 31 # Month retention
 
 # Alarms
 max_connections_threshold = 200
 # alarm_sns_topic_arn     = "arn:aws:sns:us-east-1:123456789:prod-critical-alerts"
 
 additional_tags = {
-  CostCenter    = "engineering"
-  Project       = "hello-world"
-  Compliance    = "required"
-  BackupPolicy  = "30days"
+  CostCenter   = "engineering"
+  Project      = "hello-world"
+  Compliance   = "required"
+  BackupPolicy = "30days"
 }

@@ -58,10 +58,10 @@ module "db" {
 
   identifier = "${var.app_name}-postgres"
 
-  engine               = "postgres"
-  engine_version       = var.db_engine_version
-  instance_class       = var.db_instance_class
-  allocated_storage    = var.db_allocated_storage
+  engine                = "postgres"
+  engine_version        = var.db_engine_version
+  instance_class        = var.db_instance_class
+  allocated_storage     = var.db_allocated_storage
   max_allocated_storage = var.db_max_allocated_storage
 
   db_name  = "sessions"
@@ -86,4 +86,18 @@ module "db" {
   tags = {
     Name = "${var.app_name}-rds"
   }
+}
+
+############################
+# K8s operator provisioning
+############################
+module "k8s_operator" {
+  source = "git::https://github.com/100rd/platform-design//terraform/modules/k8s-operator?ref=v0.1.0"
+
+  operator_name      = var.app_name
+  namespace          = var.k8s_operator_namespace
+  iam_role_arn       = var.k8s_operator_iam_role_arn
+  pod_security_level = var.k8s_operator_pod_security
+  resource_quota     = var.k8s_operator_resource_quota
+  limit_range        = var.k8s_operator_limit_range
 }
