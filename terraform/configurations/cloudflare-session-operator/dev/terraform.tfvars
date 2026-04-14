@@ -38,4 +38,24 @@ kafka_sessions_topic_overrides = {
   "cleanup.policy" = "compact,delete"
 }
 
+# k8s-operator module variables
+k8s_operator_namespace     = "cloudflare-system"
+k8s_operator_iam_role_arn  = ""
+k8s_operator_pod_security  = "restricted"
 
+k8s_operator_resource_quota = {
+  requests_cpu    = "500m"
+  requests_memory = "256Mi"
+  limits_cpu      = "1"
+  limits_memory   = "512Mi"
+  pods            = "5"
+}
+
+k8s_operator_limit_range = {
+  default_cpu            = "200m"
+  default_memory         = "128Mi"
+  default_request_cpu    = "50m"
+  default_request_memory = "64Mi"
+  max_cpu                = "500m"
+  max_memory             = "256Mi"
+}

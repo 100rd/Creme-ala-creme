@@ -1,0 +1,149 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/your-org/cloudflare-session-operator
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+containerPort: 8080
+probePort: 8081
+
+healthProbes:
+  readinessPath: /readyz
+  readinessPort: 8081
+  livenessPath: /healthz
+  livenessPort: 8081
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # EKS IRSA annotation (set via Terraform or manually):
+  # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/operator-role
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+leaderElection:
+  enabled: true
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+
+networkPolicy:
+  enabled: true
+  defaultDeny: true
+  allowIngress:
+    # Prometheus scraping on metrics port
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+          protocol: TCP
+  allowEgress:
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Kubernetes API server (for controller-runtime)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
+    # Cloudflare API (HTTPS)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
+    # OpenTelemetry collector
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+
+env:
+  - name: ENABLE_CLOUDFLARE_API
+    value: "true"
+  - name: ENABLE_TTL_ENFORCEMENT
+    value: "true"
+  - name: ENABLE_METRICS
+    value: "true"
+  - name: ENABLE_TRACING
+    value: "false"
+  - name: LOG_LEVEL
+    value: "info"
+  - name: LOG_FORMAT
+    value: "json"
+  # Cloudflare credentials from ExternalSecret
+  - name: CLOUDFLARE_ACCOUNT_ID
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-session-operator-credentials
+        key: account_id
+  - name: CLOUDFLARE_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-session-operator-credentials
+        key: api_token
+  # OpenTelemetry
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4318"
+  - name: OTEL_SERVICE_NAME
+    value: "cloudflare-session-operator"
+
+# External Secrets Operator integration
+externalSecret:
+  enabled: false
+  secretStoreRef:
+    name: "aws-secretsmanager"
+    kind: "SecretStore"
+  secretPath: "cloudflare-session-operator/cloudflare-api"
+  refreshInterval: "1h"

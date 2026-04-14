@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cloudflare-session-operator
+description: A hardened Kubernetes operator for Cloudflare session binding with probes, HPA, PDB, ServiceMonitor, NetworkPolicy
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
