@@ -2,7 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Creme-ala-creme/cloudflare-session-operator/api/v1alpha1"
@@ -12,10 +15,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 var (
@@ -28,6 +32,30 @@ func init() {
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 }
 
+// validateCredentials checks that required Cloudflare credentials are set.
+// Returns nil if dry-run mode is enabled or credentials are present.
+func validateCredentials() error {
+	if strings.EqualFold(os.Getenv("CLOUDFLARE_DRY_RUN"), "true") {
+		return nil
+	}
+	if os.Getenv("CLOUDFLARE_ACCOUNT_ID") == "" {
+		return fmt.Errorf("CLOUDFLARE_ACCOUNT_ID is required (set CLOUDFLARE_DRY_RUN=true to skip)")
+	}
+	if os.Getenv("CLOUDFLARE_API_TOKEN") == "" {
+		return fmt.Errorf("CLOUDFLARE_API_TOKEN is required (set CLOUDFLARE_DRY_RUN=true to skip)")
+	}
+	return nil
+}
+
+// resolveWatchNamespace determines which namespace the operator should watch.
+// Priority: WATCH_NAMESPACE env > POD_NAMESPACE env > empty (all namespaces).
+func resolveWatchNamespace() string {
+	if ns := os.Getenv("WATCH_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return os.Getenv("POD_NAMESPACE")
+}
+
 func main() {
 	var metricsAddr string
 	var probeAddr string
@@ -38,21 +66,38 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.Parse()
 
-	logger := stdr.New(os.Stdout)
-	log.SetLogger(logger)
+	logger := stdr.New(log.New(os.Stdout, "", log.LstdFlags))
+	ctrllog.SetLogger(logger)
+
+	// Issue #3: Fail-fast if Cloudflare credentials are missing.
+	if err := validateCredentials(); err != nil {
+		setupLog.Error(err, "credential validation failed")
+		os.Exit(1)
+	}
+
+	// Issue #8: Namespace-scoped cache to restrict the operator's watch scope.
+	cacheOpts := cache.Options{
+		SyncPeriod: func() *time.Duration {
+			d := 5 * time.Minute
+			return &d
+		}(),
+	}
+	if watchNS := resolveWatchNamespace(); watchNS != "" {
+		cacheOpts.DefaultNamespaces = map[string]cache.Config{
+			watchNS: {},
+		}
+		setupLog.Info("restricting watch to namespace", "namespace", watchNS)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "sessionbinding.cloudflare.example",
-		Cache: cache.Options{
-			SyncPeriod: func() *time.Duration {
-				d := 5 * time.Minute
-				return &d
-			}(),
-		},
+		Cache:                  cacheOpts,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
