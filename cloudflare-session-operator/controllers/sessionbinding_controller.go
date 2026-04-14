@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -91,12 +90,17 @@ func (r *SessionBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *SessionBindingReconciler) reconcileActive(ctx context.Context, logger logr.Logger, binding *v1alpha1.SessionBinding) (ctrl.Result, error) {
-	if binding.Spec.SessionID == "" {
-		err := errors.New("spec.sessionID must be provided")
+	// Validate sessionID format (defense-in-depth alongside CRD validation).
+	if err := cloudflare.ValidateSessionID(binding.Spec.SessionID); err != nil {
 		logger.Error(err, "invalid SessionBinding spec")
 		r.setCondition(&binding.Status.Conditions, v1alpha1.ConditionSessionDiscovered, metav1.ConditionFalse, "InvalidSpec", err.Error())
 		binding.Status.Phase = v1alpha1.SessionBindingPhaseError
 		return ctrl.Result{}, nil
+	}
+
+	// Issue #6: TTL enforcement — expire bindings that have exceeded their TTL.
+	if expired, result := r.checkTTLExpired(logger, binding); expired {
+		return result, nil
 	}
 
 	sessionExists, sessionErr := r.CFClient.EnsureSession(ctx, binding.Spec.SessionID)
@@ -150,7 +154,42 @@ func (r *SessionBindingReconciler) reconcileActive(ctx context.Context, logger l
 	binding.Status.BoundPod = pod.Name
 	binding.Status.RouteEndpoint = endpoint
 	r.setCondition(&binding.Status.Conditions, v1alpha1.ConditionRouteConfigured, metav1.ConditionTrue, "RouteConfigured", "Cloudflare route configured")
+
+	// If TTL is set, requeue to check expiration.
+	if binding.Spec.TTLSeconds != nil {
+		ttl := time.Duration(*binding.Spec.TTLSeconds) * time.Second
+		elapsed := r.Clock.Now().Sub(binding.CreationTimestamp.Time)
+		remaining := ttl - elapsed
+		if remaining > 0 {
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
 	return ctrl.Result{}, nil
+}
+
+// checkTTLExpired checks if the binding has exceeded its TTL.
+// Returns (true, result) if expired and the caller should return early.
+func (r *SessionBindingReconciler) checkTTLExpired(logger logr.Logger, binding *v1alpha1.SessionBinding) (bool, ctrl.Result) {
+	if binding.Spec.TTLSeconds == nil {
+		return false, ctrl.Result{}
+	}
+	ttl := time.Duration(*binding.Spec.TTLSeconds) * time.Second
+	elapsed := r.Clock.Now().Sub(binding.CreationTimestamp.Time)
+	if elapsed <= ttl {
+		return false, ctrl.Result{}
+	}
+
+	logger.Info("TTL expired for session binding",
+		"sessionID", binding.Spec.SessionID,
+		"ttl", ttl.String(),
+		"elapsed", elapsed.String())
+	binding.Status.Phase = v1alpha1.SessionBindingPhaseExpired
+	r.setCondition(&binding.Status.Conditions, v1alpha1.ConditionSessionDiscovered,
+		metav1.ConditionFalse, "TTLExpired",
+		fmt.Sprintf("Binding TTL of %s exceeded", ttl))
+	r.Recorder.Event(binding, corev1.EventTypeNormal, "TTLExpired",
+		fmt.Sprintf("Session binding expired after %s", ttl))
+	return true, ctrl.Result{}
 }
 
 func (r *SessionBindingReconciler) ensureSessionPod(ctx context.Context, logger logr.Logger, binding *v1alpha1.SessionBinding) (*corev1.Pod, error) {
@@ -159,13 +198,12 @@ func (r *SessionBindingReconciler) ensureSessionPod(ctx context.Context, logger 
 	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: podName}, pod); err == nil {
 		return pod, nil
 	} else if !apierrors.IsNotFound(err) {
-		return nil, err
+		return nil, fmt.Errorf("checking for existing session pod: %w", err)
 	}
 
 	deployment := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.TargetDeployment}, deployment); err != nil {
-		logger.Error(err, "target deployment not found", "deployment", binding.Spec.TargetDeployment)
-		return nil, err
+		return nil, fmt.Errorf("fetching target deployment %q: %w", binding.Spec.TargetDeployment, err)
 	}
 
 	template := deployment.Spec.Template.DeepCopy()
@@ -191,14 +229,15 @@ func (r *SessionBindingReconciler) ensureSessionPod(ctx context.Context, logger 
 	pod.Annotations[podSessionLabelKey] = binding.Spec.SessionID
 
 	if err := controllerutil.SetControllerReference(binding, pod, r.Scheme); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("setting controller reference on pod: %w", err)
 	}
 
 	if err := r.Create(ctx, pod); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating session pod %q: %w", podName, err)
 	}
 
-	r.Recorder.Event(binding, corev1.EventTypeNormal, "PodCreated", fmt.Sprintf("Created pod %s for session %s", pod.Name, binding.Spec.SessionID))
+	r.Recorder.Event(binding, corev1.EventTypeNormal, "PodCreated",
+		fmt.Sprintf("Created pod %s for session %s", pod.Name, binding.Spec.SessionID))
 	return pod, nil
 }
 
@@ -249,15 +288,14 @@ func (r *SessionBindingReconciler) cleanupResources(ctx context.Context, logger 
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Status.BoundPod}, pod); err == nil {
 			if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-				return err
+				return fmt.Errorf("deleting session pod %q: %w", binding.Status.BoundPod, err)
 			}
 		}
 	}
 
 	if binding.Spec.SessionID != "" {
 		if err := r.CFClient.DeleteRoute(ctx, binding.Spec.SessionID); err != nil {
-			logger.Error(err, "failed to delete Cloudflare route during cleanup", "sessionID", binding.Spec.SessionID)
-			return err
+			return fmt.Errorf("deleting cloudflare route for session %q: %w", binding.Spec.SessionID, err)
 		}
 	}
 
